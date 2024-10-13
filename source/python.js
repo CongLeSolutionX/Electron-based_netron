@@ -6154,6 +6154,12 @@ python.Execution = class {
             kind() {
                 return this._kind;
             }
+            __str__() {
+                throw new python.Error('Not implemented.');
+            }
+            toString() {
+                return this.__str__();
+            }
         });
         this.registerType('torch.ClassType', class extends torch.Type {
             constructor(qualified_name, cu, is_module) {
@@ -6189,6 +6195,9 @@ python.Execution = class {
             getElementType() {
                 return this._elem;
             }
+            __str__() {
+                return `Optional[${this.getElementType().toString()}]`;
+            }
         });
         this.registerType('torch.ListType', class extends torch.Type {
             constructor(elem, size) {
@@ -6200,6 +6209,9 @@ python.Execution = class {
             }
             getElementType() {
                 return this._elem;
+            }
+            __str__() {
+                return `List[${this.getElementType().toString()}]`;
             }
         });
         this.registerType('torch.FutureType', class extends torch.Type {
@@ -6213,16 +6225,32 @@ python.Execution = class {
             }
         });
         this.registerType('torch.TupleType', class extends torch.Type {
-            constructor() {
+            constructor(elements) {
                 super('TupleType');
+                this._elements = elements;
+            }
+            elements() {
+                return this._elements;
             }
         });
         this.registerType('torch.TensorType', class extends torch.Type {
             constructor() {
                 super('TensorType');
             }
+            __str__() {
+                return 'Tensor';
+            }
         });
-        this.registerType('torch.AnyType', class extends torch.Type {});
+        this.registerType('torch.AnyType', class extends torch.Type {
+            constructor() {
+                super('AnyType');
+            }
+        });
+        this.registerType('torch.NoneType', class extends torch.Type {
+            constructor() {
+                super('NoneType');
+            }
+        });
         this.registerType('torch.NumberType', class extends torch.Type {
             constructor() {
                 super('NumberType');
@@ -6232,10 +6260,16 @@ python.Execution = class {
             constructor() {
                 super('BoolType');
             }
+            __str__() {
+                return 'bool';
+            }
         });
         this.registerType('torch.IntType', class extends torch.Type {
             constructor() {
                 super('IntType');
+            }
+            __str__() {
+                return 'int';
             }
         });
         this.registerType('torch.SymIntType', class extends torch.Type {
@@ -6247,15 +6281,24 @@ python.Execution = class {
             constructor() {
                 super('FloatType');
             }
+            __str__() {
+                return 'float';
+            }
         });
         this.registerType('torch.StringType', class extends torch.Type {
             constructor() {
                 super('StringType');
             }
+            __str__() {
+                return 'str';
+            }
         });
         this.registerType('torch.ComplexType', class extends torch.Type {
             constructor() {
                 super('ComplexType');
+            }
+            __str__() {
+                return 'complex';
             }
         });
         this.registerType('torch.DictType', class extends torch.Type {
@@ -6271,7 +6314,14 @@ python.Execution = class {
                 return this._value;
             }
         });
-        this.registerType('torch.DeviceObjType', class extends torch.Type {});
+        this.registerType('torch.DeviceObjType', class extends torch.Type {
+            constructor() {
+                super('DeviceObjType');
+            }
+            __str__() {
+                return 'Device';
+            }
+        });
         this.registerType('torch._C._GeneratorType', class extends torch.Type {});
         this.registerType('torch.Argument', class {
             constructor(name, type, real_type, N, default_value, kwarg_only, alias_info) {
