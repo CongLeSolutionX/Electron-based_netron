@@ -1,11 +1,11 @@
 
+import * as base from './base.js';
 import * as electron from 'electron';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as url from 'url';
-import * as base from './base.js';
 import * as view from './view.js';
 
 const host = {};
@@ -212,8 +212,8 @@ host.ElectronHost = class {
         electron.ipcRenderer.sendSync('update-window-state', {});
         const openFileButton = this._element('open-file-button');
         if (openFileButton) {
-            openFileButton.addEventListener('click', () => {
-                this.execute('open');
+            openFileButton.addEventListener('click', async () => {
+                await this.execute('open');
             });
         }
         this.document.addEventListener('dragover', (e) => {
@@ -224,7 +224,8 @@ host.ElectronHost = class {
         });
         this.document.body.addEventListener('drop', (e) => {
             e.preventDefault();
-            const paths = Array.from(e.dataTransfer.files).map(((file) => file.path));
+            const files = Array.from(e.dataTransfer.files);
+            const paths = files.map((file) => electron.webUtils.getPathForFile(file));
             if (paths.length > 0) {
                 electron.ipcRenderer.send('drop-paths', { paths });
             }
@@ -250,11 +251,22 @@ host.ElectronHost = class {
     }
 
     async save(name, extension, defaultPath) {
-        return electron.ipcRenderer.sendSync('show-save-dialog', {
-            title: 'Export Tensor',
-            defaultPath,
-            buttonLabel: 'Export',
-            filters: [{ name, extensions: [extension] }]
+        return new Promise((resolve, reject) => {
+            electron.ipcRenderer.once('show-save-dialog-complete', (event, data) => {
+                if (data.error) {
+                    reject(new Error(data.error));
+                } else if (data.canceled) {
+                    resolve(null);
+                } else {
+                    resolve(data.filePath);
+                }
+            });
+            electron.ipcRenderer.send('show-save-dialog', {
+                title: 'Export Tensor',
+                defaultPath,
+                buttonLabel: 'Export',
+                filters: [{ name, extensions: [extension] }]
+            });
         });
     }
 
@@ -281,8 +293,17 @@ host.ElectronHost = class {
         }
     }
 
-    execute(name, value) {
-        electron.ipcRenderer.send('execute', { name, value });
+    async execute(name, value) {
+        return new Promise((resolve, reject) => {
+            electron.ipcRenderer.once('execute-complete', (event, data) => {
+                if (data.error) {
+                    reject(new Error(data.error));
+                } else {
+                    resolve(data.value);
+                }
+            });
+            electron.ipcRenderer.send('execute', { name, value });
+        });
     }
 
     async request(file, encoding, basename) {
@@ -460,11 +481,9 @@ host.ElectronHost = class {
                         resolve(data);
                     });
                 } else {
-                    const err = new Error(`The web request failed with status code ${response.statusCode} at '${location}'.`);
-                    err.type = 'error';
-                    err.url = location;
-                    err.status = response.statusCode;
-                    reject(err);
+                    const error = new Error(`The web request failed with status code '${response.statusCode}'.`);
+                    error.context = location;
+                    reject(error);
                 }
             });
             request.on("error", (err) => {
@@ -472,9 +491,8 @@ host.ElectronHost = class {
             });
             request.on("timeout", () => {
                 request.destroy();
-                const error = new Error(`The web request timed out at '${location}'.`);
-                error.type = 'timeout';
-                error.url = url;
+                const error = new Error('The web request timed out.');
+                error.context = url;
                 reject(error);
             });
             request.end();
@@ -630,7 +648,7 @@ host.ElectronHost.FileStream = class {
         }
         if (!this._buffer || this._position < this._offset || this._position + length > this._offset + this._buffer.length) {
             this._offset = this._position;
-            const length = Math.min(0x1000000, this._length - this._offset);
+            const length = Math.min(0x10000000, this._length - this._offset);
             if (!this._buffer || length !== this._buffer.length) {
                 this._buffer = new Uint8Array(length);
             }

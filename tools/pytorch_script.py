@@ -25,8 +25,13 @@ def _write(path, content):
         file.write(content)
 
 def _read_metadata():
-    metadata: list[dict[str,object]] = json.loads(_read(metadata_file))
-    return dict(map(lambda _: ( _['name'], _ ), metadata))
+    metadata = {}
+    for value in json.loads(_read(metadata_file)):
+        key = value['name']
+        if key in metadata:
+            raise ValueError(f"Duplicate key '{key}'")
+        metadata[key] = value
+    return metadata
 
 def _write_metadata(value):
     metadata = list(collections.OrderedDict(sorted(value.items())).values())
@@ -45,10 +50,16 @@ schema_source_files = [
         re.compile(r'TORCH_SELECTIVE_SCHEMA\("(.*)"', re.MULTILINE)),
     ('torch/csrc/jit/runtime/register_prim_ops.cpp',
         re.compile(r'(aten::.*->\s*.*)"', re.MULTILINE)),
+    ('torch/csrc/jit/runtime/register_prim_ops.cpp',
+        re.compile(r'(prim::.*->\s*.*)"', re.MULTILINE)),
     ('torch/csrc/jit/runtime/register_prim_ops_fulljit.cpp',
         re.compile(r'(aten::.*->\s*.*)"', re.MULTILINE)),
     ('torch/csrc/jit/runtime/register_special_ops.cpp',
         re.compile(r'(aten::.*->\s*.*)"', re.MULTILINE)),
+    ('aten/src/ATen/native/RNN.cpp',
+        re.compile(r'TORCH_SELECTIVE_SCHEMA\("(.*)"', re.MULTILINE)),
+    ('torch/jit/_shape_functions.py',
+        re.compile(r'(prim::.*->\s*.*)"', re.MULTILINE))
 ]
 
 known_schema_definitions = [
@@ -57,21 +68,31 @@ known_schema_definitions = [
     'aten::as_tensor.complex(complex t, *, ScalarType? dtype=None, Device? device=None) -> Tensor',
     'aten::as_tensor.float(float t, *, ScalarType? dtype=None, Device? device=None) -> Tensor',
     'aten::as_tensor.int(int t, *, ScalarType? dtype=None, Device? device=None) -> Tensor',
-    'aten::as_tensor.list(t[] data, *, ScalarType? dtype=None, Device? device=None) -> Tensor'
+    'aten::as_tensor.list(t[] data, *, ScalarType? dtype=None, Device? device=None) -> Tensor',
+    'aten::searchsorted.Tensor(Tensor sorted_sequence, Tensor self, *, bool out_int32=False, bool right=False, str? side=None, Tensor? sorter=None) -> Tensor',  # pylint: disable=line-too-long
+    'aten::searchsorted.Tensor_out(Tensor sorted_sequence, Tensor self, *, bool out_int32=False, bool right=False, str? side=None, Tensor? sorter=None, Tensor(a!) out) -> Tensor(a!)',  # pylint: disable=line-too-long
+    'aten::searchsorted.Scalar(Tensor sorted_sequence, Scalar self, *, bool out_int32=False, bool right=False, str? side=None, Tensor? sorter=None) -> Tensor',  # pylint: disable=line-too-long
+    'aten::searchsorted.Scalar_out(Tensor sorted_sequence, Scalar self, *, bool out_int32=False, bool right=False, str? side=None, Tensor? sorter=None, Tensor(a!) out) -> Tensor(a!)',  # pylint: disable=line-too-long
 ]
 
 def _parse_schemas():
     schemas = {}
+    definitions = set()
     for entry in schema_source_files:
         path = os.path.join(pytorch_source_dir, entry[0])
         content = _read(path)
+        content = content.splitlines()
+        content = filter(lambda _: not _.startswith('#'), content)
+        content = '\n'.join(content)
         for value in entry[1].findall(content):
             value = re.sub(r'\n|\r|\s*"', '', value) if value.startswith('_caffe2::') else value
             definition = entry[2] + value if len(entry) > 2 else value
-            schema = pytorch.Schema(definition)
-            if schema.name in schemas:
-                raise KeyError()
-            schemas[schema.name] = schema
+            if not definition in definitions:
+                definitions.add(definition)
+                schema = pytorch.Schema(definition)
+                if schema.name in schemas:
+                    raise KeyError(schema.name)
+                schemas[schema.name] = schema
     for definition in known_schema_definitions:
         schema = pytorch.Schema(definition)
         schemas[schema.name] = schema
@@ -85,6 +106,9 @@ def _filter_schemas(schemas, types):
         for key in keys:
             if schema.name == key or schema.name.startswith(key + '.'):
                 filtered_schemas.add(schema.name)
+    for schema in schemas.values():
+        if schema.name.startswith('aten::pop'):
+            filtered_schemas.add(schema.name)
     # filtered_schemas = set(types.keys())
     # content = _read('list.csv')
     # regex = re.compile(r'Unsupported function \'(.*)\' in', re.MULTILINE)
@@ -122,7 +146,7 @@ def _check_types(types, schemas):
         if schema.name in types:
             types.pop(schema.name)
     for key in list(types.keys()):
-        if key.startswith('torch.nn'):
+        if key.startswith('torch.nn') or key.startswith('__torch__.'):
             types.pop(key)
         if key.startswith('torchvision::') or \
            key.startswith('torchaudio::') or \
@@ -130,9 +154,34 @@ def _check_types(types, schemas):
             types.pop(key)
         if key.startswith('_caffe2::'):
             types.pop(key)
-    types.pop('aten::fft')
-    types.pop('aten::mul.ScalarT')
-    types.pop('aten::classes._nnapi.Compilation')
+    known_keys = [
+        'aten::_native_batch_norm_legit_functional',
+        'aten::add.float',
+        'aten::add.int',
+        'aten::add.str',
+        'aten::arange.start_out_',
+        'aten::classes._nnapi.Compilation',
+        'aten::fft',
+        'aten::gt.float_int',
+        'aten::gt.float',
+        'aten::gt.int_float',
+        'aten::gt.int',
+        'aten::le.float_int',
+        'aten::le.float',
+        'aten::le.int_float',
+        'aten::le.int',
+        'aten::mul.ScalarT',
+        'aten::remainder.float32',
+        'aten::remainder.int',
+        'aten::sub.float',
+        'aten::sub.int',
+        'aten::sub.str',
+        'aten::tensor.bool',
+        'aten::tensor.float',
+        'aten::tensor.int'
+    ]
+    for key in known_keys:
+        types.pop(key)
     if len(types) > 0:
         raise Exception('\n'.join(list(types.keys()))) # pylint: disable=broad-exception-raised
 

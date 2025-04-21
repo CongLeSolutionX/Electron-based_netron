@@ -241,6 +241,12 @@ const install = async () => {
     if (!exists) {
         await exec('npm install');
     }
+    try {
+        await exec('python --version', 'utf-8');
+        await exec('python -m pip install --upgrade --quiet setuptools pylint');
+    } catch {
+        // continue regardless of error
+    }
 };
 
 const start = async () => {
@@ -293,7 +299,7 @@ const build = async (target) => {
             writeLine('build python');
             await exec('python package.py build version');
             await exec('python -m pip install --user build wheel --quiet');
-            await exec('python -m build --no-isolation --wheel --outdir dist/pypi dist/pypi');
+            await exec('python -m build --wheel --outdir dist/pypi dist/pypi');
             if (read('install')) {
                 await exec('python -m pip install --force-reinstall dist/pypi/*.whl');
             }
@@ -509,7 +515,6 @@ const lint = async () => {
     writeLine('eslint');
     await exec('npx eslint --config publish/eslint.config.js *.*js source/*.*js test/*.*js publish/*.*js tools/*.js');
     writeLine('pylint');
-    await exec('python -m pip install --upgrade --quiet pylint');
     await exec('python -m pylint -sn --recursive=y source test publish tools *.py');
 };
 

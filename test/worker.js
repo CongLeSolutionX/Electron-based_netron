@@ -1,13 +1,14 @@
 
+import * as base from '../source/base.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as process from 'process';
-import * as url from 'url';
-import * as worker_threads from 'worker_threads';
-import * as base from '../source/base.js';
-import * as zip from '../source/zip.js';
+import * as python from '../source/python.js';
 import * as tar from '../source/tar.js';
+import * as url from 'url';
 import * as view from '../source/view.js';
+import * as worker_threads from 'worker_threads';
+import * as zip from '../source/zip.js';
 
 const access = async (path) => {
     try {
@@ -44,10 +45,10 @@ const host = {};
 
 host.TestHost = class {
 
-    constructor(window) {
-        this.errors = [];
-        this.window = window;
-        this.document = window.document;
+    constructor(window, environment) {
+        this._window = window;
+        this._environment = environment;
+        this._errors = [];
         host.TestHost.source = host.TestHost.source || dirname('..', 'source');
     }
 
@@ -57,11 +58,20 @@ host.TestHost = class {
     async start() {
     }
 
+    get window() {
+        return this._window;
+    }
+
+    get document() {
+        return this._window.document;
+    }
+
+    get errors() {
+        return this._errors;
+    }
+
     environment(name) {
-        if (name === 'zoom') {
-            return 'none';
-        }
-        return null;
+        return this._environment[name];
     }
 
     screen(/* name */) {
@@ -98,7 +108,7 @@ host.TestHost = class {
     }
 
     exception(error /*, fatal */) {
-        this.errors.push(error);
+        this._errors.push(error);
     }
 
     message() {
@@ -342,7 +352,7 @@ export class Target {
         this.events = {};
         this.tags = new Set(this.tags);
         this.folder = item.type ? path.normalize(dirname('..', 'third_party' , 'test', item.type)) : process.cwd();
-        this.measures = new Map([['name', this.name]]);
+        this.assert = !this.assert || Array.isArray(this.assert) ? this.assert : [this.assert];
     }
 
     on(event, callback) {
@@ -363,9 +373,16 @@ export class Target {
     }
 
     async execute() {
+        if (this.measures) {
+            this.measures.set('name', this.name);
+        }
         await zip.Archive.import();
         this.window = this.window || new Window();
-        this.host = await new host.TestHost(this.window);
+        const environment = {
+            zoom: 'none',
+            measure: this.measures ? true : false
+        };
+        this.host = await new host.TestHost(this.window, environment);
         this.view = new view.View(this.host);
         this.view.options.attributes = true;
         this.view.options.initializers = true;
@@ -378,7 +395,9 @@ export class Target {
                 err = error;
             }
             const duration = Number(process.hrtime.bigint() - start) / 1e9;
-            this.measures.set(method.name, duration);
+            if (this.measures) {
+                this.measures.set(method.name, duration);
+            }
             if (err) {
                 throw err;
             }
@@ -558,7 +577,7 @@ export class Target {
         this.model = await modelFactoryService.open(context);
     }
 
-    validate() {
+    async validate() {
         if (!this.model.format || (this.format && this.format !== this.model.format)) {
             throw new Error(`Invalid model format '${this.model.format}'.`);
         }
@@ -568,9 +587,8 @@ export class Target {
         if (this.runtime && this.model.runtime !== this.runtime) {
             throw new Error(`Invalid runtime '${this.model.runtime}'.`);
         }
-        if (this.model.metadata && !Array.isArray(this.model.metadata) &&
-            this.model.metadata.every((argument) => argument.name && argument.value)) {
-            throw new Error("Invalid metadata.'");
+        if (this.model.metadata && !Array.isArray(this.model.metadata) && this.model.metadata.every((argument) => argument.name && argument.value)) {
+            throw new Error("Invalid model metadata.'");
         }
         if (this.assert) {
             for (const assert of this.assert) {
@@ -607,6 +625,9 @@ export class Target {
         const validateGraph = (graph) => {
             const values = new Map();
             const validateValue = (value) => {
+                if (value === null) {
+                    return;
+                }
                 value.name.toString();
                 value.name.length;
                 value.description;
@@ -622,35 +643,44 @@ export class Target {
                 }
                 if (value.initializer) {
                     value.initializer.type.toString();
-                    const tensor = new view.Tensor(value.initializer);
-                    if (tensor.encoding !== '<' && tensor.encoding !== '>' && tensor.encoding !== '|') {
-                        throw new Error(`Tensor encoding '${tensor.encoding}' is not implemented.`);
-                    }
-                    if (tensor.layout && (tensor.layout !== 'sparse' && tensor.layout !== 'sparse.coo')) {
-                        throw new Error(`Tensor layout '${tensor.layout}' is not implemented.`);
-                    }
-                    if (!tensor.empty) {
-                        if (tensor.type && tensor.type.dataType === '?') {
-                            throw new Error('Tensor data type is not defined.');
-                        } else if (tensor.type && !tensor.type.shape) {
-                            throw new Error('Tensor shape is not defined.');
-                        } else {
-                            tensor.toString();
-                            /*
-                            const python = await import('../source/python.js');
-                            const tensor = argument.initializer;
-                            if (tensor.type && tensor.type.dataType !== '?') {
-                                let data_type = tensor.type.dataType;
-                                switch (data_type) {
-                                    case 'boolean': data_type = 'bool'; break;
+                    const tensor = new base.Tensor(value.initializer);
+                    if (!this.tags.has('skip-tensor-value')) {
+                        if (tensor.encoding !== '<' && tensor.encoding !== '>' && tensor.encoding !== '|') {
+                            throw new Error(`Tensor encoding '${tensor.encoding}' is not implemented.`);
+                        }
+                        if (tensor.layout && (tensor.layout !== 'sparse' && tensor.layout !== 'sparse.coo')) {
+                            throw new Error(`Tensor layout '${tensor.layout}' is not implemented.`);
+                        }
+                        if (!tensor.empty) {
+                            if (tensor.type && tensor.type.dataType === '?') {
+                                throw new Error('Tensor data type is not defined.');
+                            } else if (tensor.type && !tensor.type.shape) {
+                                throw new Error('Tensor shape is not defined.');
+                            } else {
+                                tensor.toString();
+                                if (this.tags.has('validation')) {
+                                    const size = tensor.type.shape.dimensions.reduce((a, b) => a * b, 1);
+                                    if (tensor.type && tensor.type.dataType !== '?' && size < 8192) {
+                                        let data_type = '?';
+                                        switch (tensor.type.dataType) {
+                                            case 'boolean': data_type = 'bool'; break;
+                                            case 'bfloat16': data_type = 'float32'; break;
+                                            case 'float8e5m2': data_type = 'float16'; break;
+                                            case 'float8e5m2fnuz': data_type = 'float16'; break;
+                                            case 'float8e4m3fn': data_type = 'float16'; break;
+                                            case 'float8e4m3fnuz': data_type = 'float16'; break;
+                                            case 'int4': data_type = 'int8'; break;
+                                            default: data_type = tensor.type.dataType; break;
+                                        }
+                                        Target.execution = Target.execution || new python.Execution();
+                                        const execution = Target.execution;
+                                        const bytes = execution.invoke('io.BytesIO', []);
+                                        const dtype = execution.invoke('numpy.dtype', [data_type]);
+                                        const array = execution.invoke('numpy.asarray', [tensor.value, dtype]);
+                                        execution.invoke('numpy.save', [bytes, array]);
+                                    }
                                 }
-                                const execution = new python.Execution();
-                                const bytes = execution.invoke('io.BytesIO', []);
-                                const dtype = execution.invoke('numpy.dtype', [ data_type ]);
-                                const array = execution.invoke('numpy.asarray', [ tensor.value, dtype ]);
-                                execution.invoke('numpy.save', [ bytes, array ]);
                             }
-                            */
                         }
                     }
                 } else if (value.name.length === 0) {
@@ -681,6 +711,9 @@ export class Target {
                     }
                 }
             }
+            if (graph.metadata && !Array.isArray(graph.metadata) && graph.metadata.every((argument) => argument.name && argument.value)) {
+                throw new Error("Invalid graph metadata.'");
+            }
             for (const node of graph.nodes) {
                 const type = node.type;
                 if (!type || typeof type.name !== 'string') {
@@ -689,37 +722,58 @@ export class Target {
                 if (Array.isArray(type.nodes)) {
                     validateGraph(type);
                 }
-                view.Documentation.format(type);
+                view.Documentation.open(type);
                 node.name.toString();
                 node.description;
-                node.attributes.slice();
-                for (const attribute of node.attributes) {
-                    attribute.name.toString();
-                    attribute.name.length;
-                    const type = attribute.type;
-                    const value = attribute.value;
-                    if ((type === 'graph' || type === 'function') && value && Array.isArray(value.nodes)) {
-                        validateGraph(value);
-                    } else {
-                        let text = new view.Formatter(attribute.value, attribute.type).toString();
-                        if (text && text.length > 1000) {
-                            text = `${text.substring(0, 1000)}...`;
+                if (node.metadata && !Array.isArray(node.metadata) && node.metadata.every((argument) => argument.name && argument.value)) {
+                    throw new Error("Invalid graph metadata.'");
+                }
+                const attributes = node.attributes;
+                if (attributes) {
+                    for (const attribute of attributes) {
+                        attribute.name.toString();
+                        attribute.name.length;
+                        const type = attribute.type;
+                        const value = attribute.value;
+                        if ((type === 'graph' || type === 'function') && value && Array.isArray(value.nodes)) {
+                            validateGraph(value);
+                        } else {
+                            let text = new view.Formatter(attribute.value, attribute.type).toString();
+                            if (text && text.length > 1000) {
+                                text = `${text.substring(0, 1000)}...`;
+                            }
+                            /* value = */ text.split('<');
                         }
-                        /* value = */ text.split('<');
                     }
                 }
-                for (const input of node.inputs) {
-                    input.name.toString();
-                    input.name.length;
-                    for (const value of input.value) {
-                        validateValue(value);
+                const inputs = node.inputs;
+                if (Array.isArray(inputs)) {
+                    for (const input of inputs) {
+                        input.name.toString();
+                        input.name.length;
+                        if (!input.type || input.type.endsWith('*')) {
+                            for (const value of input.value) {
+                                validateValue(value);
+                            }
+                            if (this.tags.has('validation')) {
+                                if (input.value.length === 1 && input.value[0].initializer) {
+                                    const sidebar = new view.TensorSidebar(this.view, input);
+                                    sidebar.render();
+                                }
+                            }
+                        }
                     }
                 }
-                for (const output of node.outputs) {
-                    output.name.toString();
-                    output.name.length;
-                    for (const value of output.value) {
-                        validateValue(value);
+                const outputs = node.outputs;
+                if (Array.isArray(outputs)) {
+                    for (const output of node.outputs) {
+                        output.name.toString();
+                        output.name.length;
+                        if (!output.type || output.type.endsWith('*')) {
+                            for (const value of output.value) {
+                                validateValue(value);
+                            }
+                        }
                     }
                 }
                 if (node.chain) {
@@ -728,15 +782,17 @@ export class Target {
                         chain.name.length;
                     }
                 }
-                // const sidebar = new view.NodeSidebar(this.view, node);
-                // sidebar.render();
+                const sidebar = new view.NodeSidebar(this.view, node);
+                sidebar.render();
             }
             const sidebar = new view.ModelSidebar(this.view, this.model, graph);
             sidebar.render();
         };
         /* eslint-enable no-unused-expressions */
         for (const graph of this.model.graphs) {
-            validateGraph(graph);
+            /* eslint-disable no-await-in-loop */
+            await validateGraph(graph);
+            /* eslint-enable no-await-in-loop */
         }
     }
 
@@ -764,6 +820,9 @@ if (!worker_threads.isMainThread) {
                 message = { type: 'status', ...message };
                 worker_threads.parentPort.postMessage(message);
             });
+            if (message.measures) {
+                target.measures = new Map();
+            }
             await target.execute();
             response.measures = target.measures;
         } catch (error) {
